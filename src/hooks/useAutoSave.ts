@@ -5,6 +5,39 @@ import { useFileStore } from '../store/fileStore';
 import { writeTnote } from '../file/tnoteWriter';
 import { writeTnoteFile, downloadBlob } from '../file/fileHandle';
 
+// ── Imperative save (bypasses debounce) ───────────────────────────────────────
+
+export async function saveNow(): Promise<void> {
+  const { nodes, edges } = useGraphStore.getState();
+  const { positions, viewport, layout } = useCanvasStore.getState();
+  const { handle, filename, manifest, setSaveStatus, setLastSaved } = useFileStore.getState();
+  if (!manifest) return;
+  setSaveStatus('saving');
+  try {
+    const blob = await writeTnote({
+      manifest,
+      nodes,
+      edges,
+      positions,
+      viewport,
+      layout,
+      existingFile: currentFileBlob,
+      contentDirty,
+      contentMap,
+      assetMap,
+    });
+    currentFileBlob = blob;
+    contentDirty.clear();
+    if (handle) await writeTnoteFile(handle, blob);
+    else downloadBlob(blob, filename);
+    setSaveStatus('saved');
+    setLastSaved(new Date().toISOString());
+  } catch (err) {
+    console.error('saveNow failed', err);
+    setSaveStatus('error');
+  }
+}
+
 const DEBOUNCE_MS = 1500;
 
 // Asset map lives outside Zustand

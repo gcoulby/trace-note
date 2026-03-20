@@ -55,8 +55,11 @@ export async function writeTnote(opts: WriteOptions): Promise<Blob> {
     }
   }
 
-  // Write new assets
+  // Write assets — purge existing entries first so deletions take effect
   if (opts.assetMap) {
+    Object.keys(zip.files)
+      .filter((p) => p.startsWith('assets/'))
+      .forEach((p) => zip.remove(p));
     for (const [assetId, buffer] of opts.assetMap) {
       zip.file(`assets/${assetId}`, buffer);
     }

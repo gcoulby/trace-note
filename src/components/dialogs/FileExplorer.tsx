@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import JSZip from 'jszip';
 import { Archive, X, ImageIcon, Lock, Trash2, BookOpen, Loader2, HardDrive, FileJson } from 'lucide-react';
 import { useGraphStore } from '../../store/graphStore';
-import { getCurrentFileBlob, assetMap, contentMap, contentDirty } from '../../hooks/useAutoSave';
+import { getCurrentFileBlob, assetMap, contentMap, contentDirty, saveNow } from '../../hooks/useAutoSave';
 import { invalidateAsset, getCachedAsset, cacheAsset } from '../../lib/assetCache';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -251,6 +251,9 @@ export function FileExplorer({ onClose, onOpenEditor }: Props) {
     contentDirty.delete(assetId);
 
     setAssetEntries((prev) => prev.filter((e) => e.id !== assetId));
+
+    // Save immediately — deletion must be reflected in the ZIP right away
+    void saveNow();
   };
 
   const handleOpenContent = (nodeId: string) => {
