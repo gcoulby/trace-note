@@ -16,6 +16,7 @@ import { OpenOrCreateDialog } from './components/dialogs/OpenOrCreateDialog';
 import { NewNodeDialog } from './components/dialogs/NewNodeDialog';
 import { EdgeDialog } from './components/dialogs/EdgeDialog';
 import { InfoPanel } from './components/dialogs/InfoPanel';
+import { FileExplorer } from './components/dialogs/FileExplorer';
 import { ContentEditor } from './components/editor/ContentEditor';
 import { CaseBoard } from './components/canvas/CaseBoard';
 import { ContextMenu, type ContextMenuItem } from './components/canvas/ContextMenu';
@@ -40,6 +41,7 @@ import {
   Copy,
   HelpCircle,
   Layers2,
+  Archive,
 } from 'lucide-react';
 import type { CaseManifest, NodeType } from './types';
 
@@ -73,9 +75,10 @@ interface ToolbarProps {
   onForce: () => void;
   onFitView: () => void;
   onInfo: () => void;
+  onFiles: () => void;
 }
 
-function Toolbar({ onSearch, onDagre, onForce, onFitView, onInfo }: ToolbarProps) {
+function Toolbar({ onSearch, onDagre, onForce, onFitView, onInfo, onFiles }: ToolbarProps) {
   const manifest = useFileStore((s) => s.manifest);
   return (
     <div className="h-10 bg-[#161b22] border-b border-[#30363d] flex items-center px-4 gap-2 shrink-0">
@@ -96,9 +99,13 @@ function Toolbar({ onSearch, onDagre, onForce, onFitView, onInfo }: ToolbarProps
         <Maximize2 size={12} /> Fit
       </button>
       <div className="h-4 w-px bg-[#30363d]" />
-      <button onClick={onSearch} title="Search  /  Cmd+K"
+      <button onClick={onSearch} title="Search  Ctrl+K"
         className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-[#8b949e] hover:text-amber-400 transition-colors rounded hover:bg-[#1c2333]">
         <Search size={12} /> Search
+      </button>
+      <button onClick={onFiles} title="Browse archive"
+        className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-[#8b949e] hover:text-amber-400 transition-colors rounded hover:bg-[#1c2333]">
+        <Archive size={12} /> Files
       </button>
       <div className="flex-1" />
       <SaveIndicator />
@@ -143,6 +150,7 @@ function AppInner() {
   const [showNewNode, setShowNewNode] = useState<{ x: number; y: number } | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeType, setActiveType] = useState<NodeType | null>(null);
   const [editorNodeId, setEditorNodeId] = useState<string | null>(null);
@@ -165,11 +173,11 @@ function AppInner() {
     const handler = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if (e.key === '/' || ((e.ctrlKey || e.metaKey) && e.key === 'k')) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
         e.preventDefault();
         setShowSearch((v) => !v);
       }
-      if (e.key === 'Escape') { setShowSearch(false); setCtxMenu(null); setShowInfo(false); }
+      if (e.key === 'Escape') { setShowSearch(false); setCtxMenu(null); setShowInfo(false); setShowFiles(false); }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -403,6 +411,7 @@ function AppInner() {
         onForce={() => void applyForce()}
         onFitView={triggerFitView}
         onInfo={() => setShowInfo(true)}
+        onFiles={() => setShowFiles(true)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -473,6 +482,13 @@ function AppInner() {
       )}
 
       {showInfo && <InfoPanel onClose={() => setShowInfo(false)} />}
+
+      {showFiles && (
+        <FileExplorer
+          onClose={() => setShowFiles(false)}
+          onOpenEditor={(id) => { setShowFiles(false); setEditorNodeId(id); }}
+        />
+      )}
 
       {editorNodeId && (
         <ContentEditor nodeId={editorNodeId} onClose={() => setEditorNodeId(null)} />

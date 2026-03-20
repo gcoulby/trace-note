@@ -1,6 +1,6 @@
 # TraceNote
 
-> **AI Declaration**: This project is a vibe coding experiment. The architecture, specification, and code are being generated with AI assistance (Claude, Anthropic). It is exploratory by nature -- expect rough edges, evolving structure, and the occasional questionable decision made at speed.
+> **AI Declaration**: This project is an agentic coding experiment. The architecture, specification, and code are being generated with AI assistance (Claude, Anthropic). It is exploratory by nature -- expect rough edges, evolving structure, and the occasional questionable decision made at speed.
 
 ---
 
