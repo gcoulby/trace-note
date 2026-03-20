@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm create:*)",
+      "Bash(printf 'y\\\\n')",
+      "Bash(node -e \":*)",
+      "Bash(cp temp-init/index.html .)",
+      "Bash(cp temp-init/package.json .)",
+      "Bash(cp temp-init/vite.config.ts .)",
+      "Bash(cp temp-init/tsconfig.json .)",
+      "Bash(cp temp-init/tsconfig.app.json .)",
+      "Bash(pnpm install:*)",
+      "Bash(pnpm add:*)",
+      "Bash(pnpm build:*)",
+      "Bash(find p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/react/types -name *.d.ts)",
+      "Bash(find p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/react/types -name *.d.ts -exec grep -l \"onChange\\\\|BlockNoteView\" {})",
+      "Bash(2)",
+      "Bash(grep -r export.*BlockNoteView p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/mantine/dist/blocknote-mantine.js)"
+    ]
+  }
+}

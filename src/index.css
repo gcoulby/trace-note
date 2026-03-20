@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* ── React Flow chrome ─────────────────────────────────────────────────────── */
+
+.react-flow__renderer {
+  background: #0d1117;
+}
+
+.react-flow__controls {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  color: #8b949e;
+  fill: #8b949e;
+}
+
+.react-flow__controls-button:hover {
+  background: #1c2333;
+  fill: #e6edf3;
+}
+
+.react-flow__minimap {
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid #30363d;
+}
+
+/* ── Drawing-pin handles ───────────────────────────────────────────────────── */
+/*
+  Single handle per node at Position.Top, styled as a push-pin.
+  The circle head sits half-above / half-below the card top edge.
+  The needle extends downward into the card body.
+*/
+
+.react-flow__handle {
+  width: 14px !important;
+  height: 14px !important;
+  border-radius: 50% !important;
+  background: #fbbf24 !important;
+  border: 2.5px solid #0d1117 !important;
+  cursor: crosshair !important;
+  transition: background 0.15s ease, box-shadow 0.15s ease !important;
+  z-index: 10;
+}
+
+.react-flow__handle:hover {
+  background: #fde68a !important;
+  box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.35) !important;
+}
+
+/* Needle — points downward from the pin head into the card */
+.react-flow__handle::after {
+  content: '';
+  position: absolute;
+  top: 90%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 2px;
+  height: 10px;
+  background: linear-gradient(to bottom, #fbbf24 40%, rgba(251, 191, 36, 0.1));
+  border-radius: 0 0 2px 2px;
+  pointer-events: none;
+}
+
+/* Suppress the connecting-line indicator that clashes with the pin */
+.react-flow__handle.connectingfrom,
+.react-flow__handle.connectingto {
+  background: #fde68a !important;
+  box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.45) !important;
+}
+
+/* ── Minimap nodes — visible against the dark background ──────────────────── */
+
+.react-flow__minimap-node {
+  fill: #3a4050;
+  stroke: none;
+}
