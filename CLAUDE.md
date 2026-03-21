@@ -667,3 +667,289 @@ Follow the existing design language precisely:
 - Do not put provider config or log data into any Zustand store that gets serialised to the case file
 - Do not make any network requests — the provider system defines providers but does not execute them; execution is out of scope for this implementation
 - Do not use `localStorage` for anything except the two provider keys (`tracenote_providers_v1`, `tracenote_provider_log_v1`)
+---
+
+## Feature: Global Proxy & Proxied Request Layer
+
+### Overview
+
+Most OSINT APIs block direct browser requests via CORS. The fix is a user-configured proxy URL stored in the `.tnote` file itself -- it travels with the case, not the browser. The analyst points it at their own local relay (e.g. a small Python script on `localhost:8765`). All provider HTTP calls route through it transparently when one is set.
+
+The proxy URL lives in `settings.json` inside the zip, read and written as part of the normal file open/save cycle.
+
+---
+
+### `.tnote` File Format Update
+
+Add `settings.json` as a new optional entry in the zip archive:
+
+```
+case.tnote (ZIP)
+├── manifest.json
+├── graph.json
+├── canvas.json
+├── settings.json         ← new
+├── assets/
+└── content/
+```
+
+`settings.json` shape:
+
+```json
+{
+  "proxyUrl": "http://localhost:8765"
+}
+```
+
+`proxyUrl` is the only field for now. Empty string or absent means no proxy. The file is optional -- if missing, defaults apply.
+
+---
+
+### Type Changes (`src/types/index.ts`)
+
+Add a `CaseSettings` interface:
+
+```typescript
+export interface CaseSettings {
+  proxyUrl: string;
+}
+
+export const DEFAULT_CASE_SETTINGS: CaseSettings = {
+  proxyUrl: '',
+};
+```
+
+---
+
+### Reader (`src/file/tnoteReader.ts`)
+
+Add `settings` to the `TnoteData` return type:
+
+```typescript
+export interface TnoteData {
+  // ...existing fields...
+  settings: CaseSettings;
+}
+```
+
+In `readTnote`, parse `settings.json` if present:
+
+```typescript
+const settingsRaw = await zip.file('settings.json')?.async('string');
+const settings: CaseSettings = settingsRaw
+  ? { ...DEFAULT_CASE_SETTINGS, ...JSON.parse(settingsRaw) }
+  : { ...DEFAULT_CASE_SETTINGS };
+```
+
+Return `settings` in the result object.
+
+---
+
+### Writer (`src/file/tnoteWriter.ts`)
+
+Add `settings: CaseSettings` to `WriteOptions` and write it to the zip:
+
+```typescript
+zip.file('settings.json', JSON.stringify(opts.settings, null, 2));
+```
+
+---
+
+### Settings Store (`src/store/settingsStore.ts`)
+
+New Zustand store. No localStorage -- state is loaded from the file on open and flushed to the file on save via the normal auto-save cycle.
+
+```typescript
+import { create } from 'zustand';
+import type { CaseSettings } from '../types';
+
+interface SettingsStoreState extends CaseSettings {
+  proxyStatus: 'unchecked' | 'ok' | 'unreachable';
+  setProxyUrl:    (url: string) => void;
+  setProxyStatus: (status: SettingsStoreState['proxyStatus']) => void;
+  load:           (settings: CaseSettings) => void;
+  reset:          () => void;
+}
+
+export const useSettingsStore = create<SettingsStoreState>((set) => ({
+  proxyUrl:    '',
+  proxyStatus: 'unchecked',
+  setProxyUrl:    (url) => set({ proxyUrl: url.replace(/\/$/, ''), proxyStatus: 'unchecked' }),
+  setProxyStatus: (proxyStatus) => set({ proxyStatus }),
+  load:           (settings) => set({ ...settings, proxyStatus: 'unchecked' }),
+  reset:          () => set({ proxyUrl: '', proxyStatus: 'unchecked' }),
+}));
+```
+
+---
+
+### Wiring into App.tsx
+
+When a file is opened and `readTnote` returns, call:
+```typescript
+useSettingsStore.getState().load(data.settings);
+```
+
+When `writeTnote` is called, pass:
+```typescript
+settings: useSettingsStore.getState()
+```
+(spread or pick just `{ proxyUrl }` -- `proxyStatus` is runtime-only and must not be written to the file).
+
+When the file store resets (case closed), call:
+```typescript
+useSettingsStore.getState().reset();
+```
+
+---
+
+### Updated Fetch Layer (`src/providers/providerRunners.ts`)
+
+Replace the existing `apiFetch` with one that checks `settingsStore`:
+
+```typescript
+async function apiFetch(url: string, headers: Record<string, string> = {}): Promise<unknown> {
+  const { proxyUrl } = useSettingsStore.getState();
+
+  if (proxyUrl) {
+    const resp = await fetch(`${proxyUrl}/fetch`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ method: 'GET', url, headers }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({})) as { status?: number; error?: string };
+      throw new Error(`Proxy error ${err.status ?? resp.status}: ${err.error ?? resp.statusText}`);
+    }
+    return resp.json();
+  }
+
+  // Direct fetch — works for CORS-friendly providers (crt.sh, who-dat)
+  const resp = await fetch(url, { headers: { Accept: 'application/json', ...headers } });
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`HTTP ${resp.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
+  }
+  return resp.json();
+}
+```
+
+No other changes to `providerRunners.ts`. All existing runners call `apiFetch` and get proxy routing automatically.
+
+---
+
+### Settings UI
+
+Add a **Settings** tab to `ProviderPanel.tsx` alongside Providers / Staging / Log.
+
+The Settings tab contains one section: **Proxy**.
+
+- **Proxy URL** text input, placeholder `http://localhost:8765`
+  - On change: call `setProxyUrl` and trigger a debounced health check (600ms)
+  - On mount: if `proxyUrl` is non-empty, run the health check immediately
+- **Status indicator** inline next to the input:
+  - Grey dot + "Not configured" when `proxyUrl` is empty
+  - Amber dot + "Checking…" while in-flight
+  - Green dot + "Connected" on success
+  - Red dot + "Unreachable" on failure
+- **Test** button to manually re-run the health check
+
+Health check: `GET {proxyUrl}/health` expecting `{ ok: true }`. Any network error or non-`ok` response sets status to `'unreachable'`.
+
+Below the input, a collapsible **Setup** block (collapsed by default):
+
+```
+Run the included proxy before using CORS-restricted providers (Shodan, HIBP, VirusTotal).
+
+  pip install fastapi uvicorn httpx
+  python proxy/proxy.py
+
+Requests are forwarded to the target API and returned to TraceNote.
+Nothing is stored or logged. Source: proxy/proxy.py
+```
+
+Note: changing the proxy URL here triggers auto-save (it is part of the case file now), just like any other state change. No separate save button needed -- the existing debounced auto-save handles it.
+
+---
+
+### Proxy Status in ProviderDetail
+
+In `ProviderDetail.tsx`, add a small inline notice below the Endpoint field for `exec === 'api'` providers that are not known CORS-safe (`crtsh`, `whois`):
+
+- `proxyUrl` empty → amber warning: "This provider may be CORS-blocked. Configure a proxy in Settings."
+- `proxyStatus === 'ok'` → green: "Requests will route through your local proxy."
+- `proxyStatus === 'unreachable'` → red: "Proxy configured but unreachable."
+
+Read from `useSettingsStore`. No new components needed.
+
+---
+
+### `proxy/proxy.py` (reference implementation)
+
+Create at `proxy/proxy.py` in the project root:
+
+```python
+"""
+TraceNote local CORS proxy.
+
+Forwards HTTP requests from the TraceNote browser app to OSINT APIs
+that block direct browser requests via CORS.
+
+Usage:
+    pip install fastapi uvicorn httpx
+    uvicorn proxy:app --port 8765
+
+No data is stored or logged.
+"""
+
+from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+import httpx
+
+app = FastAPI(title="TraceNote Proxy", docs_url=None, redoc_url=None)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/health")
+async def health():
+    return {"ok": True}
+
+@app.post("/fetch")
+async def proxy_fetch(req: Request):
+    body    = await req.json()
+    method  = body.get("method", "GET").upper()
+    url     = body.get("url", "")
+    headers = body.get("headers", {})
+
+    if not url:
+        return JSONResponse({"error": "url is required"}, status_code=400)
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            r = await client.request(method, url, headers=headers)
+            try:
+                return r.json()
+            except Exception:
+                return JSONResponse(
+                    {"error": "non-JSON response", "body": r.text[:500]},
+                    status_code=502,
+                )
+        except httpx.RequestError as e:
+            return JSONResponse({"error": str(e)}, status_code=502)
+```
+
+---
+
+### What Not to Do
+
+- Do not use `localStorage` for the proxy URL or any other case setting.
+- Do not add a per-provider proxy toggle. The proxy is global.
+- Do not write `proxyStatus` to `settings.json` -- it is runtime state only.
+- Do not change how individual runners work. All proxy logic lives in `apiFetch` only.
+- Do not log the full request URL to the activity log.

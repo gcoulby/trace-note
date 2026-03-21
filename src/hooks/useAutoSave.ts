@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useGraphStore } from '../store/graphStore';
 import { useCanvasStore } from '../store/canvasStore';
 import { useFileStore } from '../store/fileStore';
+import { useSettingsStore } from '../store/settingsStore';
 import { writeTnote } from '../file/tnoteWriter';
 import { writeTnoteFile, downloadBlob } from '../file/fileHandle';
 import { encryptBlob } from '../lib/crypto';
@@ -30,9 +31,11 @@ async function performSave(
   layout: 'freeform' | 'dagre' | 'force',
 ): Promise<void> {
   const { setSaveStatus, setLastSaved, passphrase } = useFileStore.getState();
+  const { proxyUrl } = useSettingsStore.getState();
   const blob = await writeTnote({
     manifest, nodes, edges, positions, viewport, layout,
     existingFile: currentFileBlob, contentDirty, contentMap, assetMap,
+    settings: { proxyUrl },
   });
 
   // Keep the unencrypted blob in memory for future merges
@@ -73,6 +76,7 @@ export function useAutoSave() {
   const positions = useCanvasStore((s) => s.positions);
   const viewport = useCanvasStore((s) => s.viewport);
   const layout = useCanvasStore((s) => s.layout);
+  const proxyUrl = useSettingsStore((s) => s.proxyUrl);
   const { handle, filename, manifest, setSaveStatus } = useFileStore();
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,5 +108,5 @@ export function useAutoSave() {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes, edges, positions, viewport, layout]);
+  }, [nodes, edges, positions, viewport, layout, proxyUrl]);
 }

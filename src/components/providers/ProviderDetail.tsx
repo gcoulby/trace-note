@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Trash2, Save, Play, Loader2, CheckCircle2, AlertCircle, ChevronRight } from 'lucide-react';
+import { useSettingsStore } from '../../store/settingsStore';
 import { useProviderStore } from '../../providers/providerStore';
 import { useGraphStore } from '../../store/graphStore';
 import { getRunner } from '../../providers/providerRunners';
@@ -36,6 +37,9 @@ export function ProviderDetail({ providerId }: Props) {
   const existingNodes  = useGraphStore((s) => s.nodes);
 
   const provider = providers.find((p) => p.id === providerId) ?? null;
+
+  const proxyUrl    = useSettingsStore((s) => s.proxyUrl);
+  const proxyStatus = useSettingsStore((s) => s.proxyStatus);
 
   const [tab, setTab]               = useState<DetailTab>('config');
   const [form, setForm]             = useState<Omit<OsintProvider, 'id' | 'createdAt' | 'stats'> | null>(null);
@@ -285,6 +289,28 @@ export function ProviderDetail({ providerId }: Props) {
               placeholder="https://api.example.com"
             />
           </Field>
+
+          {/* Proxy status notice — shown for API providers that aren't CORS-safe */}
+          {provider.exec === 'api' && !['crtsh', 'whois'].includes(provider.templateId ?? '') && (
+            <div className={`flex items-start gap-2 rounded px-3 py-2 text-[11px] ${
+              !proxyUrl
+                ? 'bg-amber-400/10 border border-amber-400/20 text-amber-400'
+                : proxyStatus === 'ok'
+                  ? 'bg-[#3fb950]/10 border border-[#3fb950]/20 text-[#3fb950]'
+                  : 'bg-red-400/10 border border-red-400/20 text-red-400'
+            }`}>
+              <span className="mt-0.5 shrink-0">
+                {!proxyUrl ? '⚠' : proxyStatus === 'ok' ? '✓' : '✗'}
+              </span>
+              <span>
+                {!proxyUrl
+                  ? 'This provider may be CORS-blocked. Configure a proxy in Settings.'
+                  : proxyStatus === 'ok'
+                    ? 'Requests will route through your local proxy.'
+                    : 'Proxy configured but unreachable — check it is running.'}
+              </span>
+            </div>
+          )}
 
           <Field label="API Key — stored locally only">
             <input

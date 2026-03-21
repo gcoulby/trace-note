@@ -5,9 +5,10 @@ import { ProviderDetail }   from './ProviderDetail';
 import { ProviderLog }      from './ProviderLog';
 import { AddProviderModal } from './AddProviderModal';
 import { StagingQueue }     from './StagingQueue';
+import { ProviderSettings } from './ProviderSettings';
 import { useProviderStore } from '../../providers/providerStore';
 
-type Tab = 'providers' | 'staging' | 'log';
+type Tab = 'providers' | 'staging' | 'log' | 'settings';
 
 interface Props {
   onClose: () => void;
@@ -37,6 +38,7 @@ export function ProviderPanel({ onClose }: Props) {
               ['providers', 'Providers'],
               ['staging',   pendingCount > 0 ? `Staging (${pendingCount})` : 'Staging'],
               ['log',       'Log'],
+              ['settings',  'Settings'],
             ] as [Tab, string][]).map(([t, label]) => (
               <button
                 key={t}
@@ -85,6 +87,10 @@ export function ProviderPanel({ onClose }: Props) {
 
           {tab === 'log' && (
             <ProviderLog />
+          )}
+
+          {tab === 'settings' && (
+            <ProviderSettings />
           )}
         </div>
       </div>

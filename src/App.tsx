@@ -49,6 +49,7 @@ import {
 } from 'lucide-react';
 import type { CaseManifest, NodeType } from './types';
 import { ProviderPanel } from './components/providers/ProviderPanel';
+import { useSettingsStore } from './store/settingsStore';
 
 // ── Save indicator ───────────────────────────────────────────────────────────
 
@@ -152,6 +153,8 @@ function AppInner() {
   const { setHandle, setManifest, setSaveStatus, setLastSaved, setEncryption } = useFileStore();
   const { loadGraph, nodes, addNode, deleteNode } = useGraphStore();
   const { loadCanvas, setPosition } = useCanvasStore();
+  const loadSettings = useSettingsStore((s) => s.load);
+  const resetSettings = useSettingsStore((s) => s.reset);
 
   const [isOpen, setIsOpen] = useState(false);
   const [lastFilename, setLastFilename] = useState<string | null>(null);
@@ -224,11 +227,12 @@ function AppInner() {
     setManifest(data.manifest);
     loadGraph(data.nodes, data.edges);
     loadCanvas(data.positions, data.viewport, data.layout);
+    loadSettings(data.settings);
     ingestAssets(data.assets);
     setSaveStatus('saved');
     setIsOpen(true);
     triggerFitView();
-  }, [setHandle, setManifest, loadGraph, loadCanvas, setSaveStatus, ingestAssets, triggerFitView]);
+  }, [setHandle, setManifest, loadGraph, loadCanvas, loadSettings, setSaveStatus, ingestAssets, triggerFitView]);
 
   const loadFromHandle = useCallback(async (handle: FileSystemFileHandle) => {
     const file    = await handle.getFile();
@@ -282,6 +286,7 @@ function AppInner() {
       setHandle(handle, filename);
       loadGraph({}, {});
       loadCanvas({}, { x: 0, y: 0, zoom: 1 }, 'freeform');
+      resetSettings();
       const blob = await writeTnote({ manifest, nodes: {}, edges: {}, positions: {}, viewport: { x: 0, y: 0, zoom: 1 }, layout: 'freeform' });
       setCurrentFileBlob(blob);
       const diskBlob = passphrase ? await encryptBlob(blob, passphrase) : blob;

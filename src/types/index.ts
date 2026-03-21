@@ -80,6 +80,14 @@ export interface CaseManifest {
   modified: string;
 }
 
+export interface CaseSettings {
+  proxyUrl: string;
+}
+
+export const DEFAULT_CASE_SETTINGS: CaseSettings = {
+  proxyUrl: '',
+};
+
 export type SaveStatus = 'saved' | 'saving' | 'unsaved' | 'error';
 
 export interface FileState {

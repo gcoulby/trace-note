@@ -1,5 +1,5 @@
 import JSZip from 'jszip';
-import type { GraphNode, GraphEdge, NodeId, EdgeId, CaseManifest } from '../types';
+import type { GraphNode, GraphEdge, NodeId, EdgeId, CaseManifest, CaseSettings } from '../types';
 
 interface WriteOptions {
   manifest: CaseManifest;
@@ -12,6 +12,7 @@ interface WriteOptions {
   contentDirty?: Set<NodeId>;
   contentMap?: Map<NodeId, unknown>;
   assetMap?: Map<string, ArrayBuffer>;
+  settings?: CaseSettings;
 }
 
 export async function writeTnote(opts: WriteOptions): Promise<Blob> {
@@ -44,6 +45,11 @@ export async function writeTnote(opts: WriteOptions): Promise<Blob> {
     layout: opts.layout,
   };
   zip.file('canvas.json', JSON.stringify(canvas, null, 2));
+
+  // Write settings (only write proxyUrl — never write runtime-only fields)
+  if (opts.settings !== undefined) {
+    zip.file('settings.json', JSON.stringify({ proxyUrl: opts.settings.proxyUrl }, null, 2));
+  }
 
   // Write dirty content blobs
   if (opts.contentDirty && opts.contentMap) {

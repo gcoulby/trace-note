@@ -14,6 +14,7 @@
 
 import type { OsintProvider, SeedType, StagedNode, StagedEdge } from './types';
 import type { NodeType } from '../types';
+import { useSettingsStore } from '../store/settingsStore';
 
 export interface RunResult {
   nodes: StagedNode[];
@@ -48,9 +49,23 @@ function edge(sourceLabel: string, targetLabel: string, edgeLabel?: string): Sta
 }
 
 async function apiFetch(url: string, headers: Record<string, string> = {}): Promise<unknown> {
-  const resp = await fetch(url, {
-    headers: { Accept: 'application/json', ...headers },
-  });
+  const { proxyUrl } = useSettingsStore.getState();
+
+  if (proxyUrl) {
+    const resp = await fetch(`${proxyUrl}/fetch`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ method: 'GET', url, headers }),
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({})) as { status?: number; error?: string };
+      throw new Error(`Proxy error ${err.status ?? resp.status}: ${err.error ?? resp.statusText}`);
+    }
+    return resp.json();
+  }
+
+  // Direct fetch — works for CORS-friendly providers (crt.sh, who-dat)
+  const resp = await fetch(url, { headers: { Accept: 'application/json', ...headers } });
   if (!resp.ok) {
     const body = await resp.text().catch(() => '');
     throw new Error(`HTTP ${resp.status}${body ? `: ${body.slice(0, 200)}` : ''}`);

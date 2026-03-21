@@ -1,5 +1,6 @@
 import JSZip from 'jszip';
-import type { GraphNode, GraphEdge, NodeId, EdgeId, CaseManifest } from '../types';
+import type { GraphNode, GraphEdge, NodeId, EdgeId, CaseManifest, CaseSettings } from '../types';
+import { DEFAULT_CASE_SETTINGS } from '../types';
 
 function mimeFromExt(ext: string): string {
   switch (ext.toLowerCase()) {
@@ -26,6 +27,7 @@ export interface TnoteData {
   viewport: { x: number; y: number; zoom: number };
   layout: 'freeform' | 'dagre' | 'force';
   assets: Record<string, LoadedAsset>;  // key = assetId (filename under assets/)
+  settings: CaseSettings;
 }
 
 export async function readTnote(file: File | Blob): Promise<TnoteData> {
@@ -73,7 +75,12 @@ export async function readTnote(file: File | Blob): Promise<TnoteData> {
     })
   );
 
-  return { manifest, nodes, edges, positions, viewport, layout, assets };
+  const settingsRaw = await zip.file('settings.json')?.async('string');
+  const settings: CaseSettings = settingsRaw
+    ? { ...DEFAULT_CASE_SETTINGS, ...(JSON.parse(settingsRaw) as Partial<CaseSettings>) }
+    : { ...DEFAULT_CASE_SETTINGS };
+
+  return { manifest, nodes, edges, positions, viewport, layout, assets, settings };
 }
 
 export async function loadNodeContent(file: File | Blob, nodeId: NodeId): Promise<unknown> {
