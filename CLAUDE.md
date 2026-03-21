@@ -374,3 +374,296 @@ When implementing this project:
 4. Keep `graph.json` as the source of truth. Canvas positions are secondary state.
 5. Do not use `localStorage` for anything except ephemeral UI state (e.g. last panel width). Case data lives in the file only.
 6. All user-facing text should treat the file as the session. There is no "project" concept separate from the file.
+---
+
+## Feature: OSINT Provider Manager
+
+### Overview
+
+Add an OSINT provider management system. Analysts define external data sources (APIs, CLI tools, browser scrapers) and run them against seed values from the case board. Results come back as staged node/edge candidates which the analyst reviews before they touch the graph. This keeps the graph clean and maintains a clear evidence chain.
+
+No server dependencies. No new runtime npm packages unless absolutely necessary. Everything persists in `localStorage` under a dedicated key, separate from case data.
+
+---
+
+### New Files to Create
+
+```
+src/
+├── providers/
+│   ├── types.ts              # All provider-related TypeScript types
+│   ├── providerStore.ts      # Zustand store for providers, staged results, log
+│   └── providerTemplates.ts  # Built-in template definitions (Shodan, crt.sh, etc.)
+├── components/
+│   └── providers/
+│       ├── ProviderPanel.tsx       # Main tabbed panel: list / detail / log
+│       ├── ProviderList.tsx        # Left column: provider list with status dots
+│       ├── ProviderDetail.tsx      # Centre: edit form for a selected provider
+│       ├── ProviderLog.tsx         # Right column or tab: activity log + stats
+│       ├── AddProviderModal.tsx    # Modal for adding a new provider from template or scratch
+│       └── StagingQueue.tsx        # Review panel for staged results before graph commit
+```
+
+---
+
+### Types (`src/providers/types.ts`)
+
+```typescript
+import type { NodeType } from '../types';
+
+export type SeedType =
+  | 'domain' | 'ip' | 'email' | 'username'
+  | 'person' | 'org' | 'phone' | 'hash' | 'url' | 'keyword';
+
+export type ExecMode = 'api' | 'subprocess' | 'browser' | 'local';
+
+export type ProviderCategory =
+  | 'network' | 'domain' | 'person' | 'email'
+  | 'social' | 'geo' | 'darkweb' | 'custom';
+
+export type LogLevel = 'success' | 'error' | 'warn' | 'info';
+
+export interface ProviderStats {
+  requests: number;
+  errors:   number;
+  nodes:    number;
+  edges:    number;
+  lastRun:  number | null;  // unix ms
+}
+
+export interface OsintProvider {
+  id:               string;
+  templateId:       string | null;
+  name:             string;
+  category:         ProviderCategory;
+  exec:             ExecMode;
+  seeds:            SeedType[];       // which seed types this provider accepts
+  endpoint:         string;           // API base URL or CLI command
+  apiKey:           string;           // stored locally, stripped on export
+  rateLimit:        number | null;    // req/min, null = unlimited
+  notes:            string;
+  enabled:          boolean;
+  confirmBeforeRun: boolean;
+  stageResults:     boolean;          // hold results for review before adding to graph
+  stats:            ProviderStats;
+  createdAt:        number;
+}
+
+export interface StagedNode {
+  label:      string;
+  nodeType:   NodeType;
+  summary?:   string;
+  properties: Record<string, string>;
+  tags:       string[];
+  confidence: 'low' | 'medium' | 'high';
+}
+
+export interface StagedEdge {
+  sourceLabel: string;
+  targetLabel: string;
+  edgeLabel?:  string;
+}
+
+export interface StagedResult {
+  id:           string;
+  providerId:   string;
+  providerName: string;
+  seedValue:    string;
+  seedType:     SeedType;
+  nodes:        StagedNode[];
+  edges:        StagedEdge[];
+  createdAt:    number;
+  approved:     boolean;
+  dismissed:    boolean;
+}
+
+export interface ProviderLogEntry {
+  id:           string;
+  providerId:   string;
+  providerName: string;
+  level:        LogLevel;
+  message:      string;
+  meta: {
+    nodes?:    number;
+    edges?:    number;
+    duration?: number;
+    seed?:     string;
+  };
+  ts: number;
+}
+```
+
+---
+
+### Zustand Store (`src/providers/providerStore.ts`)
+
+Persist to `localStorage` under key `tracenote_providers_v1`. Keep the log under a separate key `tracenote_provider_log_v1` and cap it at 500 entries.
+
+The store must expose:
+
+```typescript
+interface ProviderStoreState {
+  providers:     OsintProvider[];
+  log:           ProviderLogEntry[];
+  staged:        StagedResult[];
+
+  // Provider CRUD
+  addProvider:    (p: Omit<OsintProvider, 'id' | 'createdAt' | 'stats'>) => OsintProvider;
+  updateProvider: (id: string, updates: Partial<OsintProvider>) => void;
+  deleteProvider: (id: string) => void;
+
+  // Logging — bumps provider.stats.requests automatically
+  addLogEntry: (
+    providerId: string,
+    providerName: string,
+    level: LogLevel,
+    message: string,
+    meta?: ProviderLogEntry['meta']
+  ) => void;
+  clearLog: () => void;
+
+  // Staging
+  addStagedResult: (result: Omit<StagedResult, 'id' | 'createdAt' | 'approved' | 'dismissed'>) => void;
+  approveStaged:   (id: string) => void;   // marks approved; caller commits to graphStore
+  dismissStaged:   (id: string) => void;
+  clearStaged:     () => void;
+
+  // Export: providers without apiKey fields
+  exportConfig: () => OsintProvider[];
+}
+```
+
+Use `nanoid` for IDs (already a dependency).
+
+When `addLogEntry` is called:
+- Push to `log`, trim to last 500
+- Find the matching provider and increment `stats.requests`; if `level === 'error'` also increment `stats.errors`
+- If `meta.nodes` is provided, add to `stats.nodes`
+- If `meta.edges` is provided, add to `stats.edges`
+- Set `stats.lastRun` to `Date.now()`
+- Persist both providers and log to localStorage
+
+---
+
+### Built-in Templates (`src/providers/providerTemplates.ts`)
+
+Define `PROVIDER_TEMPLATES` as a typed array. Include at minimum:
+
+| id            | name            | category | exec       | seeds                              | endpoint                            |
+|---------------|-----------------|----------|------------|------------------------------------|-------------------------------------|
+| theHarvester  | theHarvester    | domain   | subprocess | domain, org                        | theHarvester                        |
+| shodan        | Shodan          | network  | api        | ip, domain                         | https://api.shodan.io               |
+| whois         | WHOIS           | domain   | api        | domain                             | https://who-dat.as93.net            |
+| crtsh         | crt.sh          | domain   | api        | domain                             | https://crt.sh                      |
+| hibp          | HaveIBeenPwned  | email    | api        | email                              | https://haveibeenpwned.com/api/v3   |
+| virustotal    | VirusTotal      | network  | api        | ip, domain, hash, url              | https://www.virustotal.com/api/v3   |
+| spiderfoot    | SpiderFoot      | domain   | api        | domain, ip, email, username        | http://localhost:5001               |
+| custom        | Custom          | custom   | api        | (empty)                            | (empty)                             |
+
+Each template also has a short `desc` string for display in the add modal.
+
+---
+
+### UI — ProviderPanel
+
+Opened via a toolbar button in `App.tsx` (add a `Radar` icon from lucide-react). Renders as a right-side drawer or full overlay — match whatever pattern is used for the existing `NodePanel` / `SearchPanel`.
+
+The panel has three sections, either as tabs or a three-column layout:
+
+**Column 1 — Provider list**
+- One row per provider
+- Status dot: green (enabled), grey (disabled), red (last run was an error)
+- Provider name + category badge
+- Clicking a row selects it and shows its detail in column 2
+
+**Column 2 — Provider detail / edit form**
+- When nothing selected, show empty state
+- When a provider is selected, show an editable form:
+  - Name (text input)
+  - Category (select)
+  - Execution mode (select)
+  - Seed types (multi-toggle: click to toggle each `SeedType`)
+  - Endpoint (text input)
+  - API Key (text input — label it "Stored locally only")
+  - Rate limit (number input, req/min)
+  - Notes (textarea)
+  - Toggles for: Enabled, Confirm Before Run, Stage Results
+  - Stats block: requests, errors, nodes out, last run timestamp
+- Save button writes back via `updateProvider`
+- Remove button calls `deleteProvider` with a confirmation
+
+**Column 3 — Activity log**
+- Three stat boxes at top: total requests, errors, nodes created
+- Filter buttons: All / Success / Error / Warn
+- Log entries in reverse-chronological order, each showing:
+  - Coloured dot by level
+  - Provider name
+  - Message
+  - Any meta (nodes/edges/duration) shown as muted inline text
+  - Timestamp (HH:MM:SS)
+- Clear button
+
+---
+
+### Add Provider Modal (`AddProviderModal.tsx`)
+
+Triggered by "Add Provider" button in the panel header.
+
+Flow:
+1. Step 1 — pick a template (grid of template cards, each showing name + desc). Selecting a template pre-fills the form fields.
+2. Step 2 — fill in / confirm details (same fields as the detail form). API key, endpoint, and rate limit are the main things to fill in for real providers.
+3. Save calls `addProvider` and closes the modal.
+
+---
+
+### Staging Queue (`StagingQueue.tsx`)
+
+A separate view (tab or secondary panel) that shows pending `StagedResult` entries where `approved === false && dismissed === false`.
+
+For each staged result:
+- Header: provider name, seed value, seed type, timestamp
+- Node candidates: list of `StagedNode` with label, nodeType badge, confidence badge, key properties
+- Edge candidates: list of `StagedEdge` shown as `source → target`
+- Two actions: **Approve** (calls `approveStaged` then commits via `useGraphStore.addNode/addEdge`) and **Dismiss**
+
+When approving a `StagedResult`:
+- For each `StagedNode`, call `graphStore.addNode(...)` with the staged data mapped to `GraphNode` shape
+- For each `StagedEdge`, resolve `sourceLabel` and `targetLabel` against the newly created and existing nodes by label, then call `graphStore.addEdge(...)`
+- Log a `success` entry via `addLogEntry` with `meta.nodes` and `meta.edges` counts
+
+Edge case: if `stageResults` is false on the provider, skip the staging queue and commit directly.
+
+---
+
+### Wiring into App.tsx
+
+1. Add a `Radar` (or `ScanLine`) icon button to the toolbar alongside the existing Search button
+2. Add `showProviders` boolean state
+3. Conditionally render `<ProviderPanel>` when `showProviders` is true, using the same panel pattern as the existing right-hand panels
+4. No changes to the `.tnote` file format — provider config is not part of the case file, it lives in localStorage
+
+---
+
+### Design Constraints
+
+Follow the existing design language precisely:
+- Background colours: `#0d1117`, `#161b22`, `#1c2333`
+- Border: `#30363d`
+- Muted text: `#484f58`, `#8b949e`
+- Primary text: `#e6edf3`
+- Accent: amber (`text-amber-400`, `bg-amber-400/10`) for active states, matching the existing pin handles and case badge
+- Success/active: `#3fb950` (matches existing save indicator)
+- Error: `text-red-400`
+- Font sizes and spacing should match `SidebarPanel.tsx` and `NodePanel.tsx` — look at those before writing any new CSS
+- Use Tailwind utility classes. No new CSS files.
+- Icons from `lucide-react` only
+
+---
+
+### What Not to Do
+
+- Do not add any npm packages beyond what is already in `package.json`
+- Do not write to the `.tnote` file or touch `tnoteReader.ts` / `tnoteWriter.ts`
+- Do not put provider config or log data into any Zustand store that gets serialised to the case file
+- Do not make any network requests — the provider system defines providers but does not execute them; execution is out of scope for this implementation
+- Do not use `localStorage` for anything except the two provider keys (`tracenote_providers_v1`, `tracenote_provider_log_v1`)

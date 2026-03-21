@@ -45,8 +45,10 @@ import {
   Layers2,
   Archive,
   Lock,
+  Radar,
 } from 'lucide-react';
 import type { CaseManifest, NodeType } from './types';
+import { ProviderPanel } from './components/providers/ProviderPanel';
 
 // ── Save indicator ───────────────────────────────────────────────────────────
 
@@ -83,9 +85,10 @@ interface ToolbarProps {
   onFitView: () => void;
   onInfo: () => void;
   onFiles: () => void;
+  onProviders: () => void;
 }
 
-function Toolbar({ onSearch, onDagre, onForce, onFitView, onInfo, onFiles }: ToolbarProps) {
+function Toolbar({ onSearch, onDagre, onForce, onFitView, onInfo, onFiles, onProviders }: ToolbarProps) {
   const manifest = useFileStore((s) => s.manifest);
   return (
     <div className="h-10 bg-[#161b22] border-b border-[#30363d] flex items-center px-4 gap-2 shrink-0">
@@ -113,6 +116,10 @@ function Toolbar({ onSearch, onDagre, onForce, onFitView, onInfo, onFiles }: Too
       <button onClick={onFiles} title="Browse archive"
         className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-[#8b949e] hover:text-amber-400 transition-colors rounded hover:bg-[#1c2333]">
         <Archive size={12} /> Files
+      </button>
+      <button onClick={onProviders} title="OSINT Providers"
+        className="flex items-center gap-1.5 px-2 py-1 text-[11px] text-[#8b949e] hover:text-amber-400 transition-colors rounded hover:bg-[#1c2333]">
+        <Radar size={12} /> Providers
       </button>
       <div className="flex-1" />
       <SaveIndicator />
@@ -164,6 +171,7 @@ function AppInner() {
   const [showSearch, setShowSearch] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
   const [showFiles, setShowFiles] = useState(false);
+  const [showProviders, setShowProviders] = useState(false);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [activeType, setActiveType] = useState<NodeType | null>(null);
   const [editorNodeId, setEditorNodeId] = useState<string | null>(null);
@@ -467,6 +475,7 @@ function AppInner() {
         onFitView={triggerFitView}
         onInfo={() => setShowInfo(true)}
         onFiles={() => setShowFiles(true)}
+        onProviders={() => setShowProviders((v) => !v)}
       />
 
       <div className="flex flex-1 overflow-hidden">
@@ -511,6 +520,10 @@ function AppInner() {
             onClose={() => setSelectedNodeId(null)}
             onOpenEditor={setEditorNodeId}
           />
+        )}
+
+        {showProviders && (
+          <ProviderPanel onClose={() => setShowProviders(false)} />
         )}
       </div>
 

@@ -15,7 +15,9 @@
       "Bash(find p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/react/types -name *.d.ts)",
       "Bash(find p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/react/types -name *.d.ts -exec grep -l \"onChange\\\\|BlockNoteView\" {})",
       "Bash(2)",
-      "Bash(grep -r export.*BlockNoteView p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/mantine/dist/blocknote-mantine.js)"
+      "Bash(grep -r export.*BlockNoteView p:/04_Computer_Science/_vibes/trace-note/node_modules/@blocknote/mantine/dist/blocknote-mantine.js)",
+      "Bash(npm run:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }
