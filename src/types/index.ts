@@ -24,6 +24,12 @@ export interface NodeAttachment {
   mimeType: string;
 }
 
+export interface NodeLocation {
+  lat: number;
+  lng: number;
+  label?: string;
+}
+
 export interface GraphNode {
   id: NodeId;
   label: string;
@@ -31,6 +37,8 @@ export interface GraphNode {
   notes?: string;
   tags: string[];
   thumbnail?: AssetId;
+  location?: NodeLocation;
+  featureDisplay?: 'image' | 'map';   // which feature shows on the card when both exist
   nodeType?: NodeType;
   attachments?: NodeAttachment[];
   hasContent: boolean;          // true when a BlockNote doc exists in content/<id>.json

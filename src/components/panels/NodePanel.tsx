@@ -1,11 +1,12 @@
 import { useState, useRef } from 'react';
-import { X, Plus, Trash2, Paperclip, FileText, ImagePlus, BookOpen } from 'lucide-react';
+import { X, Plus, Trash2, Paperclip, FileText, ImagePlus, BookOpen, MapPin, Image } from 'lucide-react';
 import { nanoid } from 'nanoid';
 import { useGraphStore } from '../../store/graphStore';
 import { getAllTags } from '../../graph/graphOps';
 import { assetMap } from '../../hooks/useAutoSave';
 import { cacheAsset, getCachedAsset } from '../../lib/assetCache';
 import { NODE_TYPE_CONFIG, ALL_NODE_TYPES } from '../../lib/nodeTypeConfig';
+import { LocationPickerDialog } from '../dialogs/LocationPickerDialog';
 import type { NodeAttachment } from '../../types';
 
 interface Props {
@@ -30,6 +31,7 @@ export function NodePanel({ nodeId, onClose, onOpenEditor }: Props) {
   const [newPropKey, setNewPropKey] = useState('');
   const [newPropVal, setNewPropVal] = useState('');
   const [imgDragOver, setImgDragOver] = useState(false);
+  const [showLocationPicker, setShowLocationPicker] = useState(false);
   const imgInputRef = useRef<HTMLInputElement>(null);
   const attachInputRef = useRef<HTMLInputElement>(null);
 
@@ -206,6 +208,76 @@ export function NodePanel({ nodeId, onClose, onOpenEditor }: Props) {
             </button>
           </div>
 
+          {/* Location */}
+          <div>
+            <SectionLabel>Location</SectionLabel>
+            {node.location ? (
+              <div className="space-y-2">
+                <div className="flex items-start gap-2 px-2 py-2 rounded bg-[#0d1117] border border-[#30363d]">
+                  <MapPin size={12} className="text-amber-400 shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    {node.location.label && (
+                      <div className="text-[11px] text-[#e6edf3] leading-tight mb-0.5 truncate">{node.location.label}</div>
+                    )}
+                    <div className="text-[10px] font-mono text-[#6e7681]">
+                      {node.location.lat.toFixed(5)}, {node.location.lng.toFixed(5)}
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowLocationPicker(true)}
+                    className="text-[10px] text-[#8b949e] hover:text-amber-400 transition-colors shrink-0"
+                  >
+                    Edit
+                  </button>
+                  <button
+                    onClick={() => updateNode(nodeId, { location: undefined, featureDisplay: undefined })}
+                    className="text-[#484f58] hover:text-red-400 transition-colors shrink-0"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+
+                {/* Feature selector — only when both image and location exist */}
+                {node.thumbnail && (
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-[#484f58] mb-1 font-mono">Card Feature</div>
+                    <div className="flex gap-1.5">
+                      <button
+                        onClick={() => updateNode(nodeId, { featureDisplay: 'image' })}
+                        className={[
+                          'flex items-center gap-1.5 px-2.5 py-1 rounded border text-[10px] transition-colors',
+                          (node.featureDisplay ?? 'image') === 'image'
+                            ? 'border-amber-400/60 text-amber-400 bg-amber-400/10'
+                            : 'border-[#30363d] text-[#484f58] hover:border-[#484f58]',
+                        ].join(' ')}
+                      >
+                        <Image size={10} /> Image
+                      </button>
+                      <button
+                        onClick={() => updateNode(nodeId, { featureDisplay: 'map' })}
+                        className={[
+                          'flex items-center gap-1.5 px-2.5 py-1 rounded border text-[10px] transition-colors',
+                          node.featureDisplay === 'map'
+                            ? 'border-amber-400/60 text-amber-400 bg-amber-400/10'
+                            : 'border-[#30363d] text-[#484f58] hover:border-[#484f58]',
+                        ].join(' ')}
+                      >
+                        <MapPin size={10} /> Map
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowLocationPicker(true)}
+                className="flex items-center gap-2 text-[11px] text-[#484f58] hover:text-amber-400 transition-colors"
+              >
+                <MapPin size={11} /> Add location pin
+              </button>
+            )}
+          </div>
+
           {/* Tags */}
           <div>
             <SectionLabel>Tags</SectionLabel>
@@ -327,6 +399,17 @@ export function NodePanel({ nodeId, onClose, onOpenEditor }: Props) {
           Delete Node
         </button>
       </div>
+
+      {showLocationPicker && (
+        <LocationPickerDialog
+          initial={node.location}
+          onConfirm={(loc) => {
+            updateNode(nodeId, { location: loc });
+            setShowLocationPicker(false);
+          }}
+          onClose={() => setShowLocationPicker(false)}
+        />
+      )}
     </div>
   );
 }

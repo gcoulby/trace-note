@@ -1,8 +1,9 @@
 import { memo } from 'react';
 import { Handle, Position, type NodeProps } from '@xyflow/react';
-import { Pencil, FileText, BookOpen, Paperclip } from 'lucide-react';
+import { Pencil, FileText, BookOpen, Paperclip, MapPin } from 'lucide-react';
 import type { GraphNode } from '../../types';
 import { NODE_TYPE_CONFIG } from '../../lib/nodeTypeConfig';
+import { osmTileUrl, pinPercentInTile } from '../../lib/locationUtils';
 
 export interface NodeCardData extends Record<string, unknown> {
   node: GraphNode;
@@ -15,12 +16,22 @@ export const NodeCard = memo(({ data, selected }: NodeProps) => {
   const { node, thumbnailUrl, dimmed, onEdit } = data as NodeCardData;
   const typeConfig = node.nodeType ? NODE_TYPE_CONFIG[node.nodeType] : null;
 
+  // Determine what to show as the card feature (top image area)
+  const hasMap   = Boolean(node.location);
+  const showMap  = hasMap && (node.featureDisplay === 'map' || (!thumbnailUrl && hasMap));
+  const showImg  = Boolean(thumbnailUrl) && !showMap;
+
+  const TILE_ZOOM = 14;
+  const tileUrl  = showMap ? osmTileUrl(node.location!.lat, node.location!.lng, TILE_ZOOM) : null;
+  const pinPos   = showMap ? pinPercentInTile(node.location!.lat, node.location!.lng, TILE_ZOOM) : null;
+
   // Top 3 properties to preview on the card
   const previewProps = Object.entries(node.properties).slice(0, 3);
 
-  const hasNotes = Boolean(node.notes?.trim());
-  const hasDoc = node.hasContent;
+  const hasNotes       = Boolean(node.notes?.trim());
+  const hasDoc         = node.hasContent;
   const hasAttachments = (node.attachments?.length ?? 0) > 0;
+  const hasLocation    = Boolean(node.location);
 
   return (
     <div
@@ -35,8 +46,22 @@ export const NodeCard = memo(({ data, selected }: NodeProps) => {
       {/* Drawing-pin handle — single port, bidirectional via ConnectionMode.Loose */}
       <Handle type="source" position={Position.Top} id="pin" />
 
-      {/* Thumbnail */}
-      {thumbnailUrl && (
+      {/* Feature: map tile with pin */}
+      {showMap && tileUrl && pinPos && (
+        <div className="relative w-full h-20 overflow-hidden rounded-t border-b border-[#30363d]">
+          <img src={tileUrl} alt="" className="w-full h-full object-cover" />
+          {/* Pin — positioned at the lat/lng within the tile */}
+          <div
+            className="absolute"
+            style={{ left: `${pinPos.px}%`, top: `${pinPos.py}%`, transform: 'translate(-50%, -50%)' }}
+          >
+            <MapPin size={14} className="text-red-500 drop-shadow-md" fill="#ef4444" />
+          </div>
+        </div>
+      )}
+
+      {/* Feature: uploaded thumbnail image */}
+      {showImg && (
         <div className="w-full h-20 overflow-hidden rounded-t border-b border-[#30363d]">
           <img src={thumbnailUrl} alt="" className="w-full h-full object-cover" />
         </div>
@@ -100,7 +125,7 @@ export const NodeCard = memo(({ data, selected }: NodeProps) => {
         )}
 
         {/* Footer indicators */}
-        {(hasNotes || hasDoc || hasAttachments) && (
+        {(hasNotes || hasDoc || hasAttachments || hasLocation) && (
           <div className="flex items-center gap-2 mt-2 pt-1.5 border-t border-[#21262d]">
             {hasNotes && (
               <span title="Has notes" className="text-[#484f58]">
@@ -115,6 +140,11 @@ export const NodeCard = memo(({ data, selected }: NodeProps) => {
             {hasAttachments && (
               <span title={`${node.attachments!.length} attachment${node.attachments!.length > 1 ? 's' : ''}`} className="text-[#484f58]">
                 <Paperclip size={9} />
+              </span>
+            )}
+            {hasLocation && (
+              <span title={node.location!.label ?? `${node.location!.lat.toFixed(3)}, ${node.location!.lng.toFixed(3)}`} className="text-[#484f58]">
+                <MapPin size={9} />
               </span>
             )}
           </div>

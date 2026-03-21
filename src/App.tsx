@@ -12,7 +12,9 @@ import {
 } from './file/fileHandle';
 import { readTnote } from './file/tnoteReader';
 import { writeTnote } from './file/tnoteWriter';
+import { isEncryptedBuffer, decryptBlob, encryptBlob } from './lib/crypto';
 import { OpenOrCreateDialog } from './components/dialogs/OpenOrCreateDialog';
+import { PasswordDialog } from './components/dialogs/PasswordDialog';
 import { NewNodeDialog } from './components/dialogs/NewNodeDialog';
 import { EdgeDialog } from './components/dialogs/EdgeDialog';
 import { InfoPanel } from './components/dialogs/InfoPanel';
@@ -42,15 +44,20 @@ import {
   HelpCircle,
   Layers2,
   Archive,
+  Lock,
 } from 'lucide-react';
 import type { CaseManifest, NodeType } from './types';
 
 // ── Save indicator ───────────────────────────────────────────────────────────
 
 function SaveIndicator() {
-  const saveStatus = useFileStore((s) => s.saveStatus);
+  const saveStatus  = useFileStore((s) => s.saveStatus);
+  const isEncrypted = useFileStore((s) => s.isEncrypted);
   return (
     <div className="flex items-center gap-1.5 text-[11px] font-mono">
+      {isEncrypted && (
+        <span title="File is encrypted"><Lock size={11} className="text-amber-400/70" /></span>
+      )}
       {saveStatus === 'saving' && (
         <><Loader2 size={12} className="animate-spin text-amber-400" /><span className="text-amber-400">saving…</span></>
       )}
@@ -135,13 +142,19 @@ let _pendingEdgeSource: string | null = null;
 // ── Main app ──────────────────────────────────────────────────────────────────
 
 function AppInner() {
-  const { setHandle, setManifest, setSaveStatus, setLastSaved } = useFileStore();
+  const { setHandle, setManifest, setSaveStatus, setLastSaved, setEncryption } = useFileStore();
   const { loadGraph, nodes, addNode, deleteNode } = useGraphStore();
   const { loadCanvas, setPosition } = useCanvasStore();
 
   const [isOpen, setIsOpen] = useState(false);
   const [lastFilename, setLastFilename] = useState<string | null>(null);
   const [lastHandle, setLastHandle] = useState<FileSystemFileHandle | null>(null);
+
+  // Encrypted-file unlock flow
+  const [pendingEncBlob, setPendingEncBlob] = useState<Blob | null>(null);
+  const [pendingEncHandle, setPendingEncHandle] = useState<FileSystemFileHandle | null>(null);
+  const [pendingEncFilename, setPendingEncFilename] = useState<string>('');
+  const [passwordError, setPasswordError] = useState('');
 
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [focusNodeId, setFocusNodeId] = useState<string | null>(null);
@@ -192,12 +205,14 @@ function AppInner() {
     });
   }, []);
 
-  const loadFromHandle = useCallback(async (handle: FileSystemFileHandle) => {
-    const file = await handle.getFile();
-    const data = await readTnote(file);
-    const blob = new Blob([await file.arrayBuffer()], { type: 'application/zip' });
-    setCurrentFileBlob(blob);
-    setHandle(handle, handle.name);
+  const loadFromBlob = useCallback(async (
+    zipBlob: Blob,
+    handle: FileSystemFileHandle | null,
+    filename: string,
+  ) => {
+    const data = await readTnote(zipBlob);
+    setCurrentFileBlob(zipBlob);
+    setHandle(handle, filename);
     setManifest(data.manifest);
     loadGraph(data.nodes, data.edges);
     loadCanvas(data.positions, data.viewport, data.layout);
@@ -206,6 +221,19 @@ function AppInner() {
     setIsOpen(true);
     triggerFitView();
   }, [setHandle, setManifest, loadGraph, loadCanvas, setSaveStatus, ingestAssets, triggerFitView]);
+
+  const loadFromHandle = useCallback(async (handle: FileSystemFileHandle) => {
+    const file    = await handle.getFile();
+    const buffer  = await file.arrayBuffer();
+    if (isEncryptedBuffer(buffer)) {
+      setPendingEncBlob(new Blob([buffer]));
+      setPendingEncHandle(handle);
+      setPendingEncFilename(handle.name);
+      setPasswordError('');
+      return;
+    }
+    await loadFromBlob(new Blob([buffer], { type: 'application/zip' }), handle, handle.name);
+  }, [loadFromBlob]);
 
   const handleReopen = useCallback(async () => {
     if (!lastHandle) return;
@@ -222,24 +250,22 @@ function AppInner() {
   const handleOpen = useCallback(async () => {
     try {
       const { handle, file } = await openTnoteFile();
-      const data = await readTnote(file);
-      const blob = new Blob([await file.arrayBuffer()], { type: 'application/zip' });
-      setCurrentFileBlob(blob);
-      setHandle(handle, handle?.name ?? file.name);
-      setManifest(data.manifest);
-      loadGraph(data.nodes, data.edges);
-      loadCanvas(data.positions, data.viewport, data.layout);
-      ingestAssets(data.assets);
-      setSaveStatus('saved');
+      const buffer = await file.arrayBuffer();
       if (handle) await saveHandleToIDB(handle);
-      setIsOpen(true);
-      triggerFitView();
+      if (isEncryptedBuffer(buffer)) {
+        setPendingEncBlob(new Blob([buffer]));
+        setPendingEncHandle(handle);
+        setPendingEncFilename(handle?.name ?? file.name);
+        setPasswordError('');
+        return;
+      }
+      await loadFromBlob(new Blob([buffer], { type: 'application/zip' }), handle, handle?.name ?? file.name);
     } catch (err) {
       if (err instanceof Error && err.name !== 'AbortError') console.error('Open failed', err);
     }
-  }, [setHandle, setManifest, loadGraph, loadCanvas, setSaveStatus, ingestAssets, triggerFitView]);
+  }, [loadFromBlob]);
 
-  const handleCreate = useCallback(async (title: string) => {
+  const handleCreate = useCallback(async (title: string, passphrase?: string) => {
     try {
       const { handle, filename } = await createTnoteFile(title);
       const now = new Date().toISOString();
@@ -250,15 +276,17 @@ function AppInner() {
       loadCanvas({}, { x: 0, y: 0, zoom: 1 }, 'freeform');
       const blob = await writeTnote({ manifest, nodes: {}, edges: {}, positions: {}, viewport: { x: 0, y: 0, zoom: 1 }, layout: 'freeform' });
       setCurrentFileBlob(blob);
-      if (handle) { await writeTnoteFile(handle, blob); await saveHandleToIDB(handle); }
-      else downloadBlob(blob, filename);
+      const diskBlob = passphrase ? await encryptBlob(blob, passphrase) : blob;
+      if (handle) { await writeTnoteFile(handle, diskBlob); await saveHandleToIDB(handle); }
+      else downloadBlob(diskBlob, filename);
+      if (passphrase) setEncryption(true, passphrase);
       setSaveStatus('saved');
       setLastSaved(now);
       setIsOpen(true);
     } catch (err) {
       if (err instanceof Error && err.name !== 'AbortError') console.error('Create failed', err);
     }
-  }, [setHandle, setManifest, loadGraph, loadCanvas, setSaveStatus, setLastSaved]);
+  }, [setHandle, setManifest, loadGraph, loadCanvas, setSaveStatus, setLastSaved, setEncryption]);
 
   // ── Canvas interactions ────────────────────────────────────────────────────
 
@@ -392,11 +420,38 @@ function AppInner() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
+  // Unlock an encrypted file
+  const handleUnlock = async (passphrase: string) => {
+    if (!pendingEncBlob) return;
+    try {
+      const zipBlob = await decryptBlob(pendingEncBlob, passphrase);
+      await loadFromBlob(zipBlob, pendingEncHandle, pendingEncFilename);
+      setEncryption(true, passphrase);
+      if (pendingEncHandle) await saveHandleToIDB(pendingEncHandle);
+      setPendingEncBlob(null);
+      setPendingEncHandle(null);
+    } catch {
+      setPasswordError('Wrong passphrase — try again');
+    }
+  };
+
+  if (pendingEncBlob) {
+    return (
+      <PasswordDialog
+        mode="unlock"
+        filename={pendingEncFilename}
+        error={passwordError}
+        onSubmit={(pw) => void handleUnlock(pw)}
+        onCancel={() => { setPendingEncBlob(null); setPendingEncHandle(null); setPasswordError(''); }}
+      />
+    );
+  }
+
   if (!isOpen) {
     return (
       <OpenOrCreateDialog
         onOpen={() => void handleOpen()}
-        onCreate={(title) => void handleCreate(title)}
+        onCreate={(title, passphrase) => void handleCreate(title, passphrase)}
         onReopen={lastHandle ? () => void handleReopen() : undefined}
         lastFilename={lastFilename}
       />
