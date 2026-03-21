@@ -8,7 +8,7 @@ A privacy-first OSINT investigation board. Build a graph of entities, relationsh
 
 The core idea: you pick a target, you start pulling threads, and TraceNote gives you a spatial canvas to lay it all out -- people, locations, organisations, documents, images, connections between them. As the picture grows, so does the graph.
 
-![TraceNote screenshot](docs/screenshot.png)
+![TraceNote screenshot](screenshot.png)
 
 ---
 
