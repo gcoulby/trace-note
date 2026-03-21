@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Trash2, Save, Play, Loader2, CheckCircle2, AlertCircle, ChevronRight } from 'lucide-react';
+import { Trash2, Save, Play, Loader2, CheckCircle2, AlertCircle, ChevronRight, ChevronDown } from 'lucide-react';
 import { useSettingsStore } from '../../store/settingsStore';
 import { useProviderStore } from '../../providers/providerStore';
 import { useGraphStore } from '../../store/graphStore';
@@ -50,7 +50,8 @@ export function ProviderDetail({ providerId }: Props) {
   const [seedValue, setSeedValue] = useState('');
   const [runStatus, setRunStatus] = useState<RunStatus>('idle');
   const [runMessage, setRunMessage] = useState('');
-  const [lastResult, setLastResult] = useState<{ nodes: StagedNode[]; edges: StagedEdge[] } | null>(null);
+  const [lastResult, setLastResult] = useState<{ nodes: StagedNode[]; edges: StagedEdge[]; rawOutput?: string } | null>(null);
+  const [rawOutputOpen, setRawOutputOpen] = useState(false);
 
   useEffect(() => {
     if (!provider) { setForm(null); setConfirmDelete(false); return; }
@@ -111,11 +112,12 @@ export function ProviderDetail({ providerId }: Props) {
     const t0 = Date.now();
 
     try {
-      const runner = getRunner(provider.templateId);
+      const runner = getRunner(provider);
       const result = await runner(provider, seedValue.trim(), seedType);
       const duration = Date.now() - t0;
 
       setLastResult(result);
+      setRawOutputOpen(false);
       setRunStatus('ok');
 
       if (provider.stageResults) {
@@ -546,6 +548,24 @@ export function ProviderDetail({ providerId }: Props) {
               {provider.stageResults && (
                 <div className="text-[10px] text-[#484f58] italic">
                   These are staged — review them in the Staging tab before they touch the graph.
+                </div>
+              )}
+
+              {/* Raw output — subprocess providers */}
+              {lastResult.rawOutput && (
+                <div className="border-t border-[#30363d] pt-3">
+                  <button
+                    onClick={() => setRawOutputOpen((v) => !v)}
+                    className="flex items-center gap-1.5 text-[10px] text-[#484f58] hover:text-[#8b949e] transition-colors font-mono uppercase tracking-wider"
+                  >
+                    {rawOutputOpen ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+                    Raw output ({lastResult.rawOutput.split('\n').length} lines)
+                  </button>
+                  {rawOutputOpen && (
+                    <pre className="mt-2 bg-[#0d1117] border border-[#30363d] rounded px-3 py-2.5 text-[10px] font-mono text-[#8b949e] leading-relaxed overflow-x-auto whitespace-pre-wrap max-h-64 overflow-y-auto">
+                      {lastResult.rawOutput}
+                    </pre>
+                  )}
                 </div>
               )}
             </div>

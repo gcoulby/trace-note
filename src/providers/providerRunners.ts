@@ -17,8 +17,9 @@ import type { NodeType } from '../types';
 import { useSettingsStore } from '../store/settingsStore';
 
 export interface RunResult {
-  nodes: StagedNode[];
-  edges: StagedEdge[];
+  nodes:      StagedNode[];
+  edges:      StagedEdge[];
+  rawOutput?: string;   // raw stdout from subprocess runners
 }
 
 export type ProviderRunner = (
@@ -71,6 +72,51 @@ async function apiFetch(url: string, headers: Record<string, string> = {}): Prom
     throw new Error(`HTTP ${resp.status}${body ? `: ${body.slice(0, 200)}` : ''}`);
   }
   return resp.json();
+}
+
+// ── Subprocess helper ─────────────────────────────────────────────────────────
+//
+// Sends a command to the proxy's /exec endpoint and returns raw stdout/stderr.
+// Throws with a clear message if no proxy is configured or the command is not
+// in the proxy's allowlist.
+
+interface ExecResult {
+  stdout:     string;
+  stderr:     string;
+  returncode: number;
+}
+
+async function proxyExec(
+  cmd: string[],
+  timeout = 120,
+  cwd?: string,
+): Promise<ExecResult> {
+  const { proxyUrl } = useSettingsStore.getState();
+
+  if (!proxyUrl) {
+    throw new Error(
+      'Subprocess providers require a local proxy with exec support. ' +
+      'Configure a proxy URL in Providers → Settings and start proxy.py.',
+    );
+  }
+
+  const resp = await fetch(`${proxyUrl}/exec`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ cmd, timeout, cwd }),
+  });
+
+  const data = await resp.json().catch(() => ({ error: resp.statusText })) as
+    | ExecResult
+    | { error: string };
+
+  if (!resp.ok || 'error' in data) {
+    throw new Error(
+      `Proxy exec error (${resp.status}): ${'error' in data ? data.error : resp.statusText}`,
+    );
+  }
+
+  return data as ExecResult;
 }
 
 // ── crt.sh ───────────────────────────────────────────────────────────────────
@@ -464,14 +510,199 @@ async function runSpiderfoot(
 }
 
 // ── theHarvester ─────────────────────────────────────────────────────────────
-// CLI tool — cannot run from browser. Clear message.
+// CLI tool invoked via the proxy's /exec endpoint.
+// Requires theHarvester to be installed and on PATH on the proxy machine.
+// theHarvester -d <domain> -b all
 
-async function runTheHarvester(): Promise<RunResult> {
-  throw new Error(
-    'theHarvester is a CLI tool and cannot be invoked from the browser. ' +
-    'Run it in your terminal: theHarvester -d <domain> -b all, ' +
-    'then add results as nodes manually or via a staged import.',
-  );
+async function runTheHarvester(
+  provider: OsintProvider,
+  seedValue: string,
+  seedType: SeedType,
+): Promise<RunResult> {
+  // Build the command — use endpoint field as the executable if overridden,
+  // falling back to the default "theHarvester"
+  const exe = provider.endpoint.trim() || 'theHarvester';
+
+  // Choose sources based on seed type
+  const sources = seedType === 'domain' ? 'all'
+                : seedType === 'org'    ? 'linkedin,google,bing'
+                : 'all';
+
+  const cmd = [exe, '-d', seedValue, '-b', sources];
+  const exec = await proxyExec(cmd, 180);
+
+  const rawOutput = [exec.stdout, exec.stderr].filter(Boolean).join('\n').trim();
+
+  if (exec.returncode !== 0 && !exec.stdout.trim()) {
+    throw new Error(
+      `theHarvester exited ${exec.returncode}: ${exec.stderr.slice(0, 400)}`,
+    );
+  }
+
+  const { nodes, edges } = parseHarvesterOutput(exec.stdout, seedValue);
+  return { nodes, edges, rawOutput };
+}
+
+function parseHarvesterOutput(stdout: string, domain: string): { nodes: StagedNode[]; edges: StagedEdge[] } {
+  const nodes: StagedNode[] = [];
+  const edges: StagedEdge[] = [];
+  const seen  = new Set<string>();
+
+  function addUnique(n: StagedNode, e?: StagedEdge) {
+    if (seen.has(n.label)) return;
+    seen.add(n.label);
+    nodes.push(n);
+    if (e) edges.push(e);
+  }
+
+  // Split into named sections by the [*] markers theHarvester emits
+  const sections = stdout.split(/\[\*\]\s*/);
+
+  for (const section of sections) {
+    const lower = section.toLowerCase();
+
+    // ── Emails ──────────────────────────────────────────────────────────────
+    if (lower.startsWith('email') || lower.startsWith('interesting email')) {
+      const lines = extractSectionLines(section);
+      for (const l of lines) {
+        if (!l.includes('@')) continue;
+        // sometimes theHarvester writes "email:source" or "email (source)"
+        const email = l.split(/[\s(]/)[0].trim().toLowerCase();
+        if (!email || !email.includes('@')) continue;
+        addUnique(
+          node(email, 'email', {
+            summary:    `Discovered by theHarvester for ${domain}`,
+            tags:       ['theHarvester', 'email'],
+            confidence: 'high',
+          }),
+          edge(domain, email, 'email found at'),
+        );
+      }
+      continue;
+    }
+
+    // ── Hosts / subdomains ───────────────────────────────────────────────────
+    if (lower.startsWith('host') || lower.startsWith('interesting url')) {
+      const lines = extractSectionLines(section);
+      for (const l of lines) {
+        // Format: hostname or hostname:ip or hostname: ip1, ip2
+        const [hostPart, ...ipParts] = l.split(':');
+        const hostname = hostPart.trim().toLowerCase();
+        if (!hostname || hostname.length < 3) continue;
+
+        addUnique(
+          node(hostname, 'website', {
+            summary:    `Subdomain discovered by theHarvester`,
+            tags:       ['theHarvester', 'host', 'subdomain'],
+            confidence: 'high',
+          }),
+          edge(domain, hostname, 'has subdomain'),
+        );
+
+        // IP(s) listed after the colon
+        const ipStr = ipParts.join(':').trim();
+        for (const ip of ipStr.split(',').map((s) => s.trim()).filter(Boolean)) {
+          if (!isIp(ip)) continue;
+          addUnique(
+            node(ip, 'ip', {
+              summary:    `IP for ${hostname}`,
+              tags:       ['theHarvester'],
+              confidence: 'high',
+            }),
+            edge(hostname, ip, 'resolves to'),
+          );
+        }
+      }
+      continue;
+    }
+
+    // ── IPs ──────────────────────────────────────────────────────────────────
+    if (lower.startsWith('ip')) {
+      const lines = extractSectionLines(section);
+      for (const l of lines) {
+        const ip = l.trim();
+        if (!isIp(ip)) continue;
+        addUnique(
+          node(ip, 'ip', {
+            summary:    `IP found by theHarvester for ${domain}`,
+            tags:       ['theHarvester', 'ip'],
+            confidence: 'high',
+          }),
+        );
+      }
+      continue;
+    }
+
+    // ── LinkedIn people ───────────────────────────────────────────────────────
+    if (lower.startsWith('linkedin') || lower.startsWith('user')) {
+      const lines = extractSectionLines(section);
+      for (const l of lines) {
+        const name = l.trim();
+        if (!name || name.length < 2) continue;
+        addUnique(
+          node(name, 'person', {
+            summary:    `LinkedIn profile found for ${domain}`,
+            tags:       ['theHarvester', 'linkedin', 'person'],
+            confidence: 'medium',
+          }),
+          edge(name, domain, 'associated with'),
+        );
+      }
+    }
+  }
+
+  return { nodes, edges };
+}
+
+/** Extract non-empty, non-separator lines from a theHarvester section block */
+function extractSectionLines(section: string): string[] {
+  return section
+    .split('\n')
+    .slice(1)                              // skip the section header line
+    .map((l) => l.trim())
+    .filter((l) => l && !l.match(/^[-*=]+$/));
+}
+
+function isIp(s: string): boolean {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(s) || /^[0-9a-f:]{3,39}$/i.test(s);
+}
+
+// ── Generic subprocess runner ─────────────────────────────────────────────────
+// For custom providers with exec:'subprocess'.
+// Uses the endpoint field as the executable name.
+// Returns raw stdout as a single document node so the analyst can inspect output.
+
+async function runSubprocess(
+  provider: OsintProvider,
+  seedValue: string,
+): Promise<RunResult> {
+  const exe = provider.endpoint.trim();
+  if (!exe) throw new Error('Set the Endpoint field to the CLI executable name (e.g. amass).');
+
+  // Build cmd: executable + seed as the final argument
+  // Analysts can override the full command via provider.notes in future
+  const cmd = [exe, seedValue];
+  const exec = await proxyExec(cmd, 120);
+
+  const rawOutput = [exec.stdout, exec.stderr].filter(Boolean).join('\n').trim();
+
+  if (exec.returncode !== 0 && !exec.stdout.trim()) {
+    throw new Error(`${exe} exited ${exec.returncode}: ${exec.stderr.slice(0, 400)}`);
+  }
+
+  // Return raw output as a document node so it's visible in staging
+  return {
+    nodes: rawOutput ? [
+      node(seedValue, 'document', {
+        summary:    `Raw output from ${provider.name}`,
+        properties: { exitcode: String(exec.returncode) },
+        tags:       [provider.name.toLowerCase().replace(/\s+/g, '-'), 'subprocess', 'raw'],
+        confidence: 'low',
+      }),
+    ] : [],
+    edges:     [],
+    rawOutput,
+  };
 }
 
 // ── Custom provider ───────────────────────────────────────────────────────────
@@ -540,8 +771,14 @@ const RUNNERS: Record<string, ProviderRunner> = {
   custom:       runCustom,
 };
 
-export function getRunner(templateId: string | null): ProviderRunner {
-  if (templateId && RUNNERS[templateId]) return RUNNERS[templateId];
-  // Fall back to custom runner for unknown templates
+export function getRunner(provider: OsintProvider): ProviderRunner {
+  // Named template runners take precedence
+  if (provider.templateId && RUNNERS[provider.templateId]) {
+    return RUNNERS[provider.templateId];
+  }
+  // Subprocess exec mode → generic subprocess runner
+  if (provider.exec === 'subprocess') {
+    return runSubprocess;
+  }
   return runCustom;
 }

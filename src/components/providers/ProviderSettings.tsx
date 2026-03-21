@@ -8,25 +8,40 @@ import { useSettingsStore } from '../../store/settingsStore';
 // ── Proxy source (inlined so the file is downloadable with no server) ─────────
 
 const PROXY_SOURCE = `"""
-TraceNote local CORS proxy.
+TraceNote local proxy.
 
-Forwards HTTP requests from the TraceNote browser app to OSINT APIs
-that block direct browser requests via CORS (Shodan, HIBP, VirusTotal, etc.).
+Two responsibilities:
+  1. HTTP relay  — POST /fetch  — forwards browser requests to CORS-blocked APIs.
+  2. Subprocess  — POST /exec   — runs allowlisted CLI tools and returns stdout/stderr.
 
 Usage:
     pip install fastapi uvicorn httpx
     uvicorn proxy:app --port 8765
 
-Then set the Proxy URL in TraceNote's Providers → Settings tab to:
-    http://localhost:8765
+Set the Proxy URL in TraceNote → Providers → Settings to http://localhost:8765
 
-No data is stored or logged. The proxy only runs locally.
+Nothing is stored or logged. All connections are local-only.
 """
+
+import subprocess
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
+
+# Only executables listed here can be invoked via POST /exec.
+# Add your own tools as needed.
+ALLOWED_COMMANDS: set[str] = {
+    "theHarvester", "theHarvester.py",
+    "amass", "subfinder", "dnsx", "httpx",
+    "nmap", "whois", "dig", "host",
+    "recon-ng", "shodan", "spiderfoot",
+    "eyewitness", "gowitness",
+}
+
+MAX_TIMEOUT_SECONDS = 600
 
 app = FastAPI(title="TraceNote Proxy", docs_url=None, redoc_url=None)
 
@@ -40,7 +55,7 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"ok": True}
+    return {"ok": True, "capabilities": ["fetch", "exec"]}
 
 
 @app.post("/fetch")
@@ -65,6 +80,34 @@ async def proxy_fetch(req: Request):
                 )
         except httpx.RequestError as e:
             return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.post("/exec")
+async def proxy_exec(req: Request):
+    body    = await req.json()
+    cmd     = body.get("cmd", [])
+    timeout = min(int(body.get("timeout", 60)), MAX_TIMEOUT_SECONDS)
+    cwd     = body.get("cwd") or None
+
+    if not cmd or not isinstance(cmd, list):
+        return JSONResponse({"error": "cmd must be a non-empty list"}, status_code=400)
+
+    executable = Path(str(cmd[0])).name
+    if executable not in ALLOWED_COMMANDS:
+        return JSONResponse(
+            {"error": f"'{executable}' is not in ALLOWED_COMMANDS. Edit proxy.py to add it."},
+            status_code=403,
+        )
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        return {"stdout": result.stdout, "stderr": result.stderr, "returncode": result.returncode}
+    except subprocess.TimeoutExpired:
+        return JSONResponse({"error": f"Command timed out after {timeout}s"}, status_code=504)
+    except FileNotFoundError:
+        return JSONResponse({"error": f"Executable not found: {cmd[0]}. Is it installed and on PATH?"}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 `;
 
 function downloadProxy() {
@@ -217,10 +260,11 @@ export function ProviderSettings() {
 
         <div className="bg-[#0d1117] border border-[#30363d] rounded px-3 py-3 space-y-2">
           <p className="text-[11px] text-[#8b949e]">
-            A lightweight Python relay. Runs entirely on your machine — nothing is stored or forwarded anywhere except the target API.
+            A lightweight Python relay with two capabilities: CORS proxy for blocked APIs,
+            and subprocess runner for CLI tools like theHarvester.
+            Runs entirely on your machine — nothing is stored or logged.
           </p>
 
-          {/* Install & run instructions */}
           <div className="mt-2 space-y-1.5">
             <div className="text-[10px] text-[#484f58] uppercase tracking-wider font-mono">Install</div>
             <CodeBlock>pip install fastapi uvicorn httpx</CodeBlock>
@@ -265,29 +309,48 @@ export function ProviderSettings() {
               </p>
             </div>
             <div>
-              <div className="text-[10px] font-mono text-[#484f58] uppercase tracking-wider mb-1">How it works</div>
+              <div className="text-[10px] font-mono text-[#484f58] uppercase tracking-wider mb-1">HTTP relay — POST /fetch</div>
               <p>
-                TraceNote sends a <code className="text-amber-400 font-mono">POST /fetch</code> request to the proxy containing
-                the target URL and any auth headers. The proxy makes the outbound request and returns the JSON response.
-                No data is stored. The proxy only accepts connections from localhost.
+                TraceNote sends the target URL and headers to the proxy, which makes the outbound request
+                and returns the JSON response. Used for CORS-blocked APIs like Shodan and VirusTotal.
+              </p>
+            </div>
+            <div>
+              <div className="text-[10px] font-mono text-[#484f58] uppercase tracking-wider mb-1">Subprocess runner — POST /exec</div>
+              <p>
+                TraceNote sends a command array (e.g.{' '}
+                <code className="text-amber-400 font-mono">["theHarvester", "-d", "example.com", "-b", "all"]</code>)
+                to the proxy, which runs it as a local subprocess and streams back stdout/stderr.
+                Only executables in <code className="text-amber-400 font-mono">ALLOWED_COMMANDS</code> inside{' '}
+                <code className="text-amber-400 font-mono">proxy.py</code> can be invoked — edit that list to add your tools.
               </p>
             </div>
             <div>
               <div className="text-[10px] font-mono text-[#484f58] uppercase tracking-wider mb-1">Which providers need it</div>
               <table className="w-full text-[10px] font-mono border-collapse mt-1">
+                <thead>
+                  <tr className="border-b border-[#30363d]">
+                    <th className="py-1 pr-3 text-left text-[#484f58] font-normal">Provider</th>
+                    <th className="py-1 pr-3 text-left text-[#484f58] font-normal">Proxy</th>
+                    <th className="py-1 pr-3 text-left text-[#484f58] font-normal">Mode</th>
+                    <th className="py-1 text-left text-[#484f58] font-normal">Notes</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {[
-                    ['crt.sh',        'No',  'CORS-friendly'],
-                    ['WHOIS',         'No',  'CORS-friendly'],
-                    ['SpiderFoot',    'No',  'Self-hosted'],
-                    ['Shodan',        'Yes', 'CORS-blocked'],
-                    ['HaveIBeenPwnd', 'Yes', 'CORS-blocked'],
-                    ['VirusTotal',    'Yes', 'CORS-blocked'],
-                    ['theHarvester',  '—',   'CLI only'],
-                  ].map(([name, proxy, note]) => (
+                    ['crt.sh',        'No',    '/fetch',  'CORS-friendly'],
+                    ['WHOIS',         'No',    '/fetch',  'CORS-friendly'],
+                    ['SpiderFoot',    'No',    '/fetch',  'Self-hosted'],
+                    ['Shodan',        'Yes',   '/fetch',  'CORS-blocked'],
+                    ['HaveIBeenPwnd', 'Yes',   '/fetch',  'CORS-blocked'],
+                    ['VirusTotal',    'Yes',   '/fetch',  'CORS-blocked'],
+                    ['theHarvester',  'Yes',   '/exec',   'CLI subprocess'],
+                    ['Custom (exec)', 'Yes',   '/exec',   'Any allowlisted CLI'],
+                  ].map(([name, proxy, mode, note]) => (
                     <tr key={name} className="border-b border-[#30363d]/50">
                       <td className="py-1 pr-3 text-[#e6edf3]">{name}</td>
-                      <td className={`py-1 pr-3 ${proxy === 'Yes' ? 'text-amber-400' : proxy === 'No' ? 'text-[#3fb950]' : 'text-[#484f58]'}`}>{proxy}</td>
+                      <td className={`py-1 pr-3 ${proxy === 'Yes' ? 'text-amber-400' : 'text-[#3fb950]'}`}>{proxy}</td>
+                      <td className="py-1 pr-3 text-[#484f58]">{mode}</td>
                       <td className="py-1 text-[#484f58]">{note}</td>
                     </tr>
                   ))}
